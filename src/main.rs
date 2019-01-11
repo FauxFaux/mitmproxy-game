@@ -8,6 +8,7 @@ use failure::ensure;
 use failure::err_msg;
 use failure::format_err;
 use failure::Error;
+use failure::ResultExt;
 use itertools::Itertools;
 use serde_json::Value;
 
@@ -18,8 +19,9 @@ struct Block {
 }
 
 fn take_block(input: &mut Peekable<Bytes<&[u8]>>) -> Result<Option<Block>, Error> {
-    if input.peek().is_none() {
-        return Ok(None);
+    match input.peek() {
+        Some(Ok(b'\n')) | None => return Ok(None),
+        _ => (),
     }
 
     let len = input
@@ -30,9 +32,28 @@ fn take_block(input: &mut Peekable<Bytes<&[u8]>>) -> Result<Option<Block>, Error
         })
         .map(|c| c.map(char::from))
         .collect::<Result<String, io::Error>>()?
-        .parse()?;
+        .parse::<usize>()
+        .with_context(|_| {
+            format_err!(
+                "reading length near {:?}",
+                String::from_utf8_lossy(
+                    &input.take(50).map(|x| x.unwrap_or(0)).collect::<Vec<_>>()
+                )
+            )
+        })?;
 
-    let data = input.take(len).collect::<Result<Vec<u8>, io::Error>>()?;
+    ensure!(
+        b':' == input
+            .next()
+            .ok_or_else(|| err_msg("eof in colon after length"))??,
+        "missing colon after length"
+    );
+
+    let data = input
+        .take(len)
+        .collect::<Result<Vec<u8>, io::Error>>()
+        .with_context(|_| format_err!("reading block data {}", len))?;
+
     ensure!(
         data.len() == len,
         "short read, wanted: {}, got: {}",
@@ -40,7 +61,10 @@ fn take_block(input: &mut Peekable<Bytes<&[u8]>>) -> Result<Option<Block>, Error
         data.len()
     );
 
-    let sigil = input.next().ok_or_else(|| err_msg("no trailing type"))??;
+    let sigil = input
+        .next()
+        .ok_or_else(|| err_msg("no trailing type"))?
+        .with_context(|_| format_err!("reading sigil"))?;
 
     Ok(Some(Block { sigil, data }))
 }
@@ -50,11 +74,16 @@ fn deconstruct(input: Vec<u8>) -> Result<Vec<Value>, Error> {
 
     let mut ret = Vec::new();
 
-    while let Some(block) = take_block(&mut input)? {
+    while let Some(block) = take_block(&mut input)
+        .with_context(|_| format_err!("reading block after {} items", ret.len()))?
+    {
         ret.push(match block.sigil {
-            b']' => Value::Array(deconstruct(block.data)?),
+            b']' => Value::Array(
+                deconstruct(block.data).with_context(|_| format_err!("destructuring array"))?,
+            ),
             b'}' => Value::Object(
-                deconstruct(block.data)?
+                deconstruct(block.data)
+                    .with_context(|_| format_err!("destructuring object"))?
                     .into_iter()
                     .tuples()
                     .map(|(key, value)| -> Result<_, Error> {
@@ -72,14 +101,27 @@ fn deconstruct(input: Vec<u8>) -> Result<Vec<Value>, Error> {
             // ',' means "string"
             // '^' means "unix timestamp with nanos", which can't fit in a JS number
             // '~' appears to mean "empty string"
-            b';' | b',' | b'^' | b'~' => Value::String(String::from_utf8(block.data)?),
-            b'#' => Value::Number(String::from_utf8(block.data)?.parse()?),
-            b'!' => match String::from_utf8(block.data)?.as_ref() {
+            a @ b';' | a @ b',' | a @ b'^' | a @ b'~' => Value::String(
+                String::from_utf8_lossy(&block.data).to_string(), //                    .with_context(|_| format_err!("reading string type {}", char::from(a)))?,
+            ),
+            b'#' => Value::Number(
+                String::from_utf8(block.data)
+                    .with_context(|_| format_err!("reading number"))?
+                    .parse()?,
+            ),
+            b'!' => match String::from_utf8(block.data)
+                .with_context(|_| format_err!("reading boolean"))?
+                .as_ref()
+            {
                 "false" => Value::Bool(false),
                 "true" => Value::Bool(true),
                 other => bail!("invalid boolean: {:?}", other),
             },
-            other => bail!("unimplemented: {} ({:?})", other, block.data),
+            other => bail!(
+                "unimplemented: {} ({:?})",
+                char::from(other),
+                String::from_utf8_lossy(&block.data)
+            ),
         });
     }
 
