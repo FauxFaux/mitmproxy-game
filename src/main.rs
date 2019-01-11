@@ -5,8 +5,8 @@ use std::str::Chars;
 use failure::bail;
 use failure::ensure;
 use failure::err_msg;
-use failure::Error;
 use failure::format_err;
+use failure::Error;
 use itertools::Itertools;
 use serde_json::Value;
 
@@ -47,17 +47,20 @@ fn deconstruct(input: &str) -> Result<Vec<Value>, Error> {
     while let Some(block) = take_block(&mut input)? {
         ret.push(match block.sigil {
             ']' => Value::Array(deconstruct(&block.data)?),
-            '}' => {
-                let parts = deconstruct(&block.data)?;
-                ensure!(parts.len() % 2 == 0, "even number of parts in a dict");
-                let mut map = serde_json::Map::new();
-                for (key, value) in parts.into_iter().tuples() {
-                    let key = key.as_str().ok_or_else(|| format_err!("non-string key: {:?}", key))?;
-                    map.insert(key.to_string(), value);
-                }
-
-                Value::Object(map)
-            },
+            '}' => Value::Object(
+                deconstruct(&block.data)?
+                    .into_iter()
+                    .tuples()
+                    .map(|(key, value)| -> Result<_, Error> {
+                        Ok((
+                            key.as_str()
+                                .ok_or_else(|| format_err!("invalid non-string key: {:?}", key))?
+                                .to_string(),
+                            value,
+                        ))
+                    })
+                    .collect::<Result<_, Error>>()?,
+            ),
 
             // ';' means "well known value", I believe. Could be "utf-8" or something.
             // ',' means "string"
