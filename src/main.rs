@@ -10,6 +10,9 @@ enum Sigil {
     Plain,
     Array,
     Object,
+    Comma,
+    Hash,
+    Empty,
 }
 
 #[derive(Debug)]
@@ -30,16 +33,28 @@ fn take_block(input: &mut Peekable<Chars>) -> Result<Block, Error> {
             input.next().unwrap();
             Sigil::Object
         }
+        ',' => {
+            input.next().unwrap();
+            Sigil::Comma
+        }
+        '#' => {
+            input.next().unwrap();
+            Sigil::Hash
+        }
         other => {
             bail!("unrecognised sigil: {:?}", other);
         }
     };
-
-    let number: usize = input
+    let len = input
         .take_while(|c| c.is_numeric())
-        .collect::<String>()
-        .parse()?;
-    let data = input.take(number).collect::<String>();
+        .collect::<String>();
+
+    if len.is_empty() {
+        return Ok(Block { sigil, data: String::new() });
+    }
+
+    let len: usize = len.parse()?;
+    let data = input.take(len).collect::<String>();
 
     Ok(Block { sigil, data })
 }
