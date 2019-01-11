@@ -1,4 +1,5 @@
 use std::io;
+use std::io::Read;
 use std::iter::Peekable;
 use std::str::Chars;
 
@@ -81,7 +82,9 @@ fn deconstruct(input: &str) -> Result<Vec<Value>, Error> {
 }
 
 fn main() -> Result<(), Error> {
-    let doc = deconstruct(include_str!("../sample").trim_end())?;
+    let mut input = String::new();
+    io::stdin().lock().read_to_string(&mut input)?;
+    let doc = deconstruct(input.trim_end())?;
 
     serde_json::to_writer_pretty(io::stdout().lock(), &doc)?;
 
