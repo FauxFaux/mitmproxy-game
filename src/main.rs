@@ -37,14 +37,14 @@ fn take_block(input: &mut Peekable<Chars>) -> Result<Option<Block>, Error> {
     Ok(Some(Block { sigil, data }))
 }
 
-fn deconstruct(input: &str, prefix: &str) -> Result<Value, Error> {
+fn deconstruct(input: &str) -> Result<Value, Error> {
     let mut input = input.chars().peekable();
 
     let mut ret = Vec::new();
 
     while let Some(block) = take_block(&mut input)? {
         ret.push(match block.sigil {
-            ']' | '}' => deconstruct(&block.data, &format!("{}   ", prefix))?,
+            ']' | '}' => deconstruct(&block.data)?,
 
             // ';' means "well known value", I believe. Could be "utf-8" or something.
             // ',' means "string"
@@ -65,7 +65,7 @@ fn deconstruct(input: &str, prefix: &str) -> Result<Value, Error> {
 }
 
 fn main() -> Result<(), Error> {
-    let doc = deconstruct(include_str!("../sample").trim_end(), "")?;
+    let doc = deconstruct(include_str!("../sample").trim_end())?;
 
     serde_json::to_writer_pretty(io::stdout().lock(), &doc)?;
 
