@@ -1,7 +1,7 @@
 use std::io;
+use std::io::Bytes;
 use std::io::Read;
 use std::iter::Peekable;
-use std::str::Chars;
 
 use failure::bail;
 use failure::ensure;
@@ -13,21 +13,26 @@ use serde_json::Value;
 
 #[derive(Debug)]
 struct Block {
-    sigil: char,
-    data: String,
+    sigil: u8,
+    data: Vec<u8>,
 }
 
-fn take_block(input: &mut Peekable<Chars>) -> Result<Option<Block>, Error> {
+fn take_block(input: &mut Peekable<Bytes<&[u8]>>) -> Result<Option<Block>, Error> {
     if input.peek().is_none() {
         return Ok(None);
     }
 
     let len = input
-        .take_while(|c| c.is_numeric())
-        .collect::<String>()
+        .peeking_take_while(|c| {
+            c.as_ref()
+                .map(|&c| char::from(c).is_numeric())
+                .unwrap_or(false)
+        })
+        .map(|c| c.map(char::from))
+        .collect::<Result<String, io::Error>>()?
         .parse()?;
 
-    let data = input.take(len).collect::<String>();
+    let data = input.take(len).collect::<Result<Vec<u8>, io::Error>>()?;
     ensure!(
         data.len() == len,
         "short read, wanted: {}, got: {}",
@@ -35,21 +40,21 @@ fn take_block(input: &mut Peekable<Chars>) -> Result<Option<Block>, Error> {
         data.len()
     );
 
-    let sigil = input.next().ok_or_else(|| err_msg("no trailing type"))?;
+    let sigil = input.next().ok_or_else(|| err_msg("no trailing type"))??;
 
     Ok(Some(Block { sigil, data }))
 }
 
-fn deconstruct(input: &str) -> Result<Vec<Value>, Error> {
-    let mut input = input.chars().peekable();
+fn deconstruct(input: Vec<u8>) -> Result<Vec<Value>, Error> {
+    let mut input = input.bytes().peekable();
 
     let mut ret = Vec::new();
 
     while let Some(block) = take_block(&mut input)? {
         ret.push(match block.sigil {
-            ']' => Value::Array(deconstruct(&block.data)?),
-            '}' => Value::Object(
-                deconstruct(&block.data)?
+            b']' => Value::Array(deconstruct(block.data)?),
+            b'}' => Value::Object(
+                deconstruct(block.data)?
                     .into_iter()
                     .tuples()
                     .map(|(key, value)| -> Result<_, Error> {
@@ -67,9 +72,9 @@ fn deconstruct(input: &str) -> Result<Vec<Value>, Error> {
             // ',' means "string"
             // '^' means "unix timestamp with nanos", which can't fit in a JS number
             // '~' appears to mean "empty string"
-            ';' | ',' | '^' | '~' => Value::String(block.data),
-            '#' => Value::Number(block.data.parse()?),
-            '!' => match block.data.as_str() {
+            b';' | b',' | b'^' | b'~' => Value::String(String::from_utf8(block.data)?),
+            b'#' => Value::Number(String::from_utf8(block.data)?.parse()?),
+            b'!' => match String::from_utf8(block.data)?.as_ref() {
                 "false" => Value::Bool(false),
                 "true" => Value::Bool(true),
                 other => bail!("invalid boolean: {:?}", other),
@@ -82,9 +87,9 @@ fn deconstruct(input: &str) -> Result<Vec<Value>, Error> {
 }
 
 fn main() -> Result<(), Error> {
-    let mut input = String::new();
-    io::stdin().lock().read_to_string(&mut input)?;
-    let doc = deconstruct(input.trim_end())?;
+    let mut input = Vec::new();
+    io::stdin().lock().read_to_end(&mut input)?;
+    let doc = deconstruct(input)?;
 
     serde_json::to_writer_pretty(io::stdout().lock(), &doc)?;
 
