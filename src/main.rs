@@ -69,20 +69,35 @@ fn take_block<R: BufRead>(input: &mut Peekable<Bytes<R>>) -> Result<Option<Block
     Ok(Some(Block { sigil, data }))
 }
 
-fn deconstruct<R: BufRead, F: FnMut(Value)>(input: R, mut cb: F) -> Result<(), Error> {
+enum Then<'v> {
+    PushVec(&'v mut Vec<Value>),
+    WriteStdout,
+}
+
+impl<'v> Then<'v> {
+    fn exec(&mut self, doc: Value) -> Result<(), Error> {
+        match self {
+            Then::PushVec(vec) => vec.push(doc),
+            Then::WriteStdout => serde_json::to_writer_pretty(io::stdout().lock(), &doc)?,
+        }
+        Ok(())
+    }
+}
+
+fn deconstruct<R: BufRead>(input: R, mut then: Then) -> Result<(), Error> {
     let mut input = input.bytes().peekable();
 
     while let Some(block) = take_block(&mut input).with_context(|_| format_err!("reading block"))? {
-        cb(match block.sigil {
+        then.exec(match block.sigil {
             b']' => {
                 let mut contents = Vec::new();
-                deconstruct(io::Cursor::new(block.data), |v| contents.push(v))
+                deconstruct(io::Cursor::new(block.data), Then::PushVec(&mut contents))
                     .with_context(|_| format_err!("destructuring array"))?;
                 Value::Array(contents)
             }
             b'}' => {
                 let mut contents: Vec<Value> = Vec::new();
-                deconstruct(io::Cursor::new(block.data), |v| contents.push(v))
+                deconstruct(io::Cursor::new(block.data), Then::PushVec(&mut contents))
                     .with_context(|_| format_err!("destructuring object"))?;
                 Value::Object(
                     contents
@@ -135,17 +150,14 @@ fn deconstruct<R: BufRead, F: FnMut(Value)>(input: R, mut cb: F) -> Result<(), E
                 char::from(other),
                 String::from_utf8_lossy(&block.data)
             ),
-        });
+        })?;
     }
 
     Ok(())
 }
 
 fn main() -> Result<(), Error> {
-    deconstruct(io::stdin().lock(), |doc| {
-        serde_json::to_writer_pretty(io::stdout().lock(), &doc).unwrap()
-    })?;
-
+    deconstruct(io::stdin().lock(), Then::WriteStdout)?;
     Ok(())
 }
 
@@ -166,7 +178,7 @@ fn trivial() -> Result<(), Error> {
             b"75:7:headers;61:33:13:Cache-Control,12:no-transform,]20:6:Pragma,8:no-cache,]]}"
                 .to_vec(),
         ),
-        |v| bodies.push(v),
+        Then::PushVec(&mut bodies),
     )?;
 
     assert_eq!(
