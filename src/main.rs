@@ -1,4 +1,5 @@
 use std::io;
+use std::io::BufRead;
 use std::io::Bytes;
 use std::io::Read;
 use std::iter::Peekable;
@@ -20,7 +21,7 @@ struct Block {
     data: Vec<u8>,
 }
 
-fn take_block(input: &mut Peekable<Bytes<&[u8]>>) -> Result<Option<Block>, Error> {
+fn take_block<R: BufRead>(input: &mut Peekable<Bytes<R>>) -> Result<Option<Block>, Error> {
     match input.peek() {
         Some(Ok(b'\n')) | None => return Ok(None),
         _ => (),
@@ -38,9 +39,7 @@ fn take_block(input: &mut Peekable<Bytes<&[u8]>>) -> Result<Option<Block>, Error
         .with_context(|_| {
             format_err!(
                 "reading length near {:?}",
-                String::from_utf8_lossy(
-                    &input.take(50).flat_map(|x| x.ok()).collect::<Vec<_>>()
-                )
+                String::from_utf8_lossy(&input.take(50).flat_map(|x| x.ok()).collect::<Vec<_>>())
             )
         })?;
 
@@ -71,7 +70,7 @@ fn take_block(input: &mut Peekable<Bytes<&[u8]>>) -> Result<Option<Block>, Error
     Ok(Some(Block { sigil, data }))
 }
 
-fn deconstruct(input: Vec<u8>) -> Result<Vec<Value>, Error> {
+fn deconstruct<R: BufRead>(input: R) -> Result<Vec<Value>, Error> {
     let mut input = input.bytes().peekable();
 
     let mut ret = Vec::new();
@@ -81,10 +80,11 @@ fn deconstruct(input: Vec<u8>) -> Result<Vec<Value>, Error> {
     {
         ret.push(match block.sigil {
             b']' => Value::Array(
-                deconstruct(block.data).with_context(|_| format_err!("destructuring array"))?,
+                deconstruct(io::Cursor::new(block.data))
+                    .with_context(|_| format_err!("destructuring array"))?,
             ),
             b'}' => Value::Object(
-                deconstruct(block.data)
+                deconstruct(io::Cursor::new(block.data))
                     .with_context(|_| format_err!("destructuring object"))?
                     .into_iter()
                     .tuples()
@@ -139,9 +139,7 @@ fn deconstruct(input: Vec<u8>) -> Result<Vec<Value>, Error> {
 }
 
 fn main() -> Result<(), Error> {
-    let mut input = Vec::new();
-    io::stdin().lock().read_to_end(&mut input)?;
-    let doc = deconstruct(input)?;
+    let doc = deconstruct(io::stdin().lock())?;
 
     serde_json::to_writer_pretty(io::stdout().lock(), &doc)?;
 
@@ -166,10 +164,10 @@ fn trivial() -> Result<(), Error> {
                 ["Pragma", "no-cache"],
             ],
         })],
-        deconstruct(
+        deconstruct(io::Cursor::new(
             b"75:7:headers;61:33:13:Cache-Control,12:no-transform,]20:6:Pragma,8:no-cache,]]}"
-                .to_vec(),
-        )?
+                .to_vec()
+        ))?
     );
     Ok(())
 }
