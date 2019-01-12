@@ -10,6 +10,7 @@ use failure::format_err;
 use failure::Error;
 use failure::ResultExt;
 use itertools::Itertools;
+use serde_json::json;
 use serde_json::Value;
 
 #[derive(Debug)]
@@ -63,7 +64,7 @@ fn take_block(input: &mut Peekable<Bytes<&[u8]>>) -> Result<Option<Block>, Error
 
     let sigil = input
         .next()
-        .ok_or_else(|| err_msg("no trailing type"))?
+        .ok_or_else(|| format_err!("no trailing type after block of len: {}", len))?
         .with_context(|_| format_err!("reading sigil"))?;
 
     Ok(Some(Block { sigil, data }))
@@ -135,5 +136,22 @@ fn main() -> Result<(), Error> {
 
     serde_json::to_writer_pretty(io::stdout().lock(), &doc)?;
 
+    Ok(())
+}
+
+#[test]
+fn trivial() -> Result<(), Error> {
+    assert_eq!(
+        vec![json!({
+            "headers": [
+                ["Cache-Control", "no-transform"],
+                ["Pragma", "no-cache"],
+            ],
+        })],
+        deconstruct(
+            b"75:7:headers;61:33:13:Cache-Control,12:no-transform,]20:6:Pragma,8:no-cache,]]}"
+                .to_vec(),
+        )?
+    );
     Ok(())
 }
