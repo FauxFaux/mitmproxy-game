@@ -2,6 +2,7 @@ use std::io;
 use std::io::Bytes;
 use std::io::Read;
 use std::iter::Peekable;
+use std::string::FromUtf8Error;
 
 use failure::bail;
 use failure::ensure;
@@ -38,7 +39,7 @@ fn take_block(input: &mut Peekable<Bytes<&[u8]>>) -> Result<Option<Block>, Error
             format_err!(
                 "reading length near {:?}",
                 String::from_utf8_lossy(
-                    &input.take(50).map(|x| x.unwrap_or(0)).collect::<Vec<_>>()
+                    &input.take(50).flat_map(|x| x.ok()).collect::<Vec<_>>()
                 )
             )
         })?;
@@ -98,12 +99,20 @@ fn deconstruct(input: Vec<u8>) -> Result<Vec<Value>, Error> {
                     .collect::<Result<_, Error>>()?,
             ),
 
+            b',' => match String::from_utf8(block.data) {
+                Ok(s) => Value::String(s),
+                Err(e) => json!({
+                    "base64": base64::encode(e.as_bytes()),
+                }),
+            },
+
             // ';' means "well known value", I believe. Could be "utf-8" or something.
-            // ',' means "string"
             // '^' means "unix timestamp with nanos", which can't fit in a JS number
             // '~' appears to mean "empty string"
-            a @ b';' | a @ b',' | a @ b'^' | a @ b'~' => Value::String(
-                String::from_utf8_lossy(&block.data).to_string(), //                    .with_context(|_| format_err!("reading string type {}", char::from(a)))?,
+            a @ b';' | a @ b'^' | a @ b'~' => Value::String(
+                String::from_utf8(block.data)
+                    .map_err(string_error)
+                    .with_context(|_| format_err!("reading string type {:?}", char::from(a)))?,
             ),
             b'#' => Value::Number(
                 String::from_utf8(block.data)
@@ -137,6 +146,15 @@ fn main() -> Result<(), Error> {
     serde_json::to_writer_pretty(io::stdout().lock(), &doc)?;
 
     Ok(())
+}
+
+fn string_error(e: FromUtf8Error) -> Error {
+    let start = e.utf8_error().valid_up_to().saturating_sub(20);
+    let end = (start + 60).min(e.as_bytes().len());
+    format_err!(
+        "bad string: {:?}...",
+        String::from_utf8_lossy(&e.as_bytes()[start..end])
+    )
 }
 
 #[test]

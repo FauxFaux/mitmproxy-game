@@ -5,6 +5,7 @@ authors = ["Chris West (Faux) <git@goeswhere.com>"]
 edition = "2018"
 
 [dependencies]
+base64 = "0.10"
 failure = "0.1"
 itertools = "0.8"
 serde_json = "1"
